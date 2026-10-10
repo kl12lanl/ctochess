@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мини-Stockfish на JS</title>
+    <!-- Подключаем стили шахматной доски -->
+    <link rel="stylesheet" href="https://cloudflare.com">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #222;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        h1 { margin-bottom: 10px; color: #4caf50; }
+        #board { width: 400px; max-width: 90vw; margin: 20px 0; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+        .status-container { font-size: 1.1rem; min-height: 30px; text-align: center; }
+        button {
+            padding: 10px 20px;
+            font-size: 1rem;
+            background-color: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #45a049; }
+    </style>
+</head>
+<body>
+
+    <h1>Веб-Шахматы с ИИ</h1>
+    <div class="status-container" id="status">Ваш ход (Белые)</div>
+    
+    <!-- Сюда отрисуется доска -->
+    <div id="board"></div>
+    
+    <button onclick="resetGame()">Начать заново</button>
+
+    <!-- Подключаем jQuery, Chess.js (правила) и Chessboard.js (графика) -->
+    <script src="https://jquery.com"></script>
+    <script src="https://cloudflare.com"></script>
+    <script src="https://cloudflare.com"></script>
+
+    <script>
+        let board = null;
+        let game = new Chess();
+        const status = ('#status');
+
+        // Оценка стоимости фигур (базовая для ИИ)
+        const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+        // Оценка позиции на основе материала
+        function evaluateBoard(boardState) {
+            let totalEvaluation = 0;
+            for (let i = 0; i < 8; i++) {
+                for (let j = 0; j < 8; j++) {
+                    const square = boardState[i][j];
+                    if (square) {
+                        const value = PIECE_VALUES[square.type];
+                        totalEvaluation += (square.color === 'w') ? value : -value;
+                    }
+                }
+            }
+            return totalEvaluation;
+        }
+
+        // Альфа-бета отсечение (Алгоритм поиска ходов)
+        function alphaBeta(game, depth, alpha, beta, isMaximizing) {
+            if (depth === 0 || game.game_over()) {
+                return evaluateBoard(game.board());
+            }
+
+            const moves = game.moves();
+            
+            if (isMaximizing) {
+                let maxEval = -Infinity;
+                for (let move of moves) {
+                    game.move(move);
+                    let evaluation = alphaBeta(game, depth - 1, alpha, beta, false);
+                    game.undo();
+                    maxEval = Math.max(maxEval, evaluation);
+                    alpha = Math.max(alpha, evaluation);
+                    if (beta <= alpha) break;
+                }
+                return maxEval;
+            } else {
+                let minEval = Infinity;
+                for (let move of moves) {
+                    game.move(move);
+                    let evaluation = alphaBeta(game, depth - 1, alpha, beta, true);
+                    game.undo();
+                    minEval = Math.min(minEval, evaluation);
+                    beta = Math.min(beta, evaluation);
+                    if (beta <= alpha) break;
+                }
+                return minEval;
+            }
+        }
+
+        // Поиск лучшего хода для Черных (ИИ)
+        function makeAIMove() {
+            const moves = game.moves();
+            if (game.game_over()) return;
+
+            \$status.html('ИИ думает...');
+            
+            // Запускаем расчет в таймауте, чтобы браузер успел обновить текст статуса
+            setTimeout(() => {
+                let bestMove = null;
+                let bestValue = Infinity; // Черные минимизируют оценку Белых
+                
+                // Сортируем ходы (взятия вперед), чтобы альфа-бета работала быстрее
+                moves.sort((a, b) => (b.includes('x') ? 1 : 0) - (a.includes('x') ? 1 : 0));
+
+                for (let move of moves) {
+                    game.move(move);
+                    let boardValue = alphaBeta(game, 2, -Infinity, Infinity, true); // глубина 2 (3 полухода суммарно)
+                    game.undo();
+                    
+                    if (boardValue < bestValue) {
+                        bestValue = boardValue;
+                        bestMove = move;
+                    }
+                }
+
+                game.move(bestMove);
+                board.position(game.fen());
+                updateStatus();
+            }, 50);
+        }
+
+        // Логика перетаскивания фигур игроком
+        function onDragStart(source, piece, position, orientation) {
+            if (game.game_over()) return false;
+            // Игроку разрешено двигать только Белые фигуры
+            if (piece.search(/^b/) !== -1) return false;
+        }
+
+        function onDrop(source, target) {
+            // Проверяем ход на легальность
+            let move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q' // Автоматическое превращение в ферзя для простоты
+            });
+
+            if (move === null) return 'snapback'; // Возвращаем фигуру, если ход нелегальный
+
+            updateStatus();
+            
+            // Если игра не окончена, даем ход ИИ
+            if (!game.game_over()) {
+                window.setTimeout(makeAIMove, 250);
+            }
+        }
+
+        function onSnapEnd() {
+            board.position(game.fen());
+        }
+
+        // Обновление состояния и текста на экране
+        function updateStatus() {
+            let statusText = '';
+            let moveColor = game.turn() === 'b' ? 'Черных' : 'Белых';
+
+            if (game.in_checkmate()) {
+                statusText = `Игра окончена! Мат. Победили ${game.turn() === 'w' ? 'Черные' : 'Белые'}.`;
+            } else if (game.in_draw()) {
+                statusText = 'Игра окончена! Ничья.';
+            } else {
+                statusText = `Ход ${moveColor}`;
+                if (game.in_check()) {
+                    statusText += ' (Шах!)';
+                }
+            }
+            \$status.html(statusText);
+        }
+
+        // Сброс игры
+        function resetGame() {
+            game.reset();
+            board.start();
+            \$status.html('Ваш ход (Белые)');
+        }
+
+        // Конфигурация доски Chessboard.js
+        const config = {
+            draggable: true,
+            position: 'start',
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd,
+            pieceTheme: 'https://chessboardjs.com{piece}.png'
+        };
+        board = Chessboard('board', config);
+    </script>
+</body>
+</html>
